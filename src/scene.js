@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 
 const parts = [
   {id:'case',name:'Chassis',category:'STRUCTURE',symbol:'▤',description:'The chassis protects the hardware, provides mounting points, and guides airflow through the system. The side panel is removed here to reveal the internals.',facts:[['Role','Structure & protection'],['Connects to','All internal components'],['In this model','Mid-tower, side panel removed']]},
@@ -12,12 +13,41 @@ const parts = [
   {id:'fans',name:'Case cooling',category:'THERMAL',symbol:'✳',description:'Case fans move air through the enclosure. A typical arrangement draws cooler air in at the front and exhausts warmer air at the rear or top.',facts:[['Role','Exchange warm & cool air'],['Works with','CPU & graphics coolers'],['In this model','Three front intake fans']]}
 ];
 const list = document.querySelector('#component-list');
-parts.forEach((part,i)=>{const button=document.createElement('button');button.className='part-button';button.dataset.part=part.id;button.setAttribute('aria-pressed','false');button.innerHTML=`<span class="part-number">${String(i+1).padStart(2,'0')}</span><span>${part.name}</span><span class="part-arrow">↗</span>`;button.addEventListener('click',()=>selectPart(part.id));list.append(button);});
+parts.forEach((part,i)=>{
+ const row=document.createElement('div');row.className='part-row';
+ const button=document.createElement('button');button.className='part-button';button.dataset.part=part.id;button.setAttribute('aria-pressed','false');button.innerHTML=`<span class="part-number">${String(i+1).padStart(2,'0')}</span><span>${part.name}</span><span class="part-arrow">↗</span>`;button.addEventListener('click',()=>selectPart(part.id));
+ const visibility=document.createElement('button');visibility.className='visibility-button';visibility.dataset.visibility=part.id;visibility.setAttribute('aria-pressed','true');visibility.setAttribute('aria-label',`Hide ${part.name}`);visibility.title=`Hide ${part.name}`;visibility.innerHTML='<span aria-hidden="true">●</span>';
+ visibility.addEventListener('click',()=>toggleVisibility(part.id));row.append(button,visibility);list.append(row);
+});
 const groups = new Map();
 let selected = null;
+let sceneApi = null;
+const visibilityState = new Map(parts.map(part=>[part.id,true]));
+let isolated = false;
+let visibilityBeforeIsolation = null;
+
+function updateVisibilityControls(){
+ parts.forEach(part=>{const visible=visibilityState.get(part.id);const button=document.querySelector(`[data-visibility="${part.id}"]`);button.setAttribute('aria-pressed',String(visible));button.setAttribute('aria-label',`${visible?'Hide':'Show'} ${part.name}`);button.title=`${visible?'Hide':'Show'} ${part.name}`;button.innerHTML=`<span aria-hidden="true">${visible?'●':'○'}</span>`;});
+}
+function applyVisibility(){groups.forEach((group,id)=>{group.visible=visibilityState.get(id);});updateVisibilityControls();}
+function setIsolation(next){
+ if(next&&!selected)return;
+ if(next){visibilityBeforeIsolation=new Map(visibilityState);parts.forEach(part=>visibilityState.set(part.id,part.id===selected));isolated=true;}
+ else if(isolated){visibilityState.clear();visibilityBeforeIsolation.forEach((value,key)=>visibilityState.set(key,value));isolated=false;visibilityBeforeIsolation=null;}
+ applyVisibility();
+ const button=document.querySelector('#isolate-part');button.setAttribute('aria-pressed',String(isolated));button.querySelector('span:last-child').textContent=isolated?'Exit isolate':'Isolate';
+ document.querySelector('#view-badge').textContent=isolated?'ISOLATED VIEW':(sceneApi?.exploded?'EXPLODED VIEW':'CUTAWAY VIEW');
+ if(selected)document.querySelector('#scene-status').textContent=`● ${parts.find(p=>p.id===selected).name} ${isolated?'isolated':'restored'}`;
+}
+function toggleVisibility(id){
+ if(isolated)setIsolation(false);
+ visibilityState.set(id,!visibilityState.get(id));applyVisibility();
+ const part=parts.find(p=>p.id===id);document.querySelector('#scene-status').textContent=`● ${part.name} ${visibilityState.get(id)?'shown':'hidden'}`;
+}
 function selectPart(id){
  selected=id;
  groups.forEach((group,key)=>group.traverse(mesh=>{if(mesh.isMesh){mesh.material.emissive.setHex(key===id?0x8dcc54:mesh.userData.baseEmissive);mesh.material.emissiveIntensity=key===id?0.35:mesh.userData.baseIntensity;}}));
+ document.querySelectorAll('.scene-label').forEach(label=>label.classList.toggle('selected',label.textContent===parts.find(part=>part.id===id).name));
  document.querySelectorAll('.part-button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.part===id)));
  const part=parts.find(p=>p.id===id);
  document.querySelector('#detail-category').textContent=part.category;
@@ -26,6 +56,8 @@ function selectPart(id){
  document.querySelector('#detail-title').textContent=part.name;
  document.querySelector('#detail-description').textContent=part.description;
  document.querySelector('#detail-facts').innerHTML=part.facts.map(([key,value])=>`<div><dt>${key}</dt><dd>${value}</dd></div>`).join('');
+ document.querySelector('#isolate-part').disabled=false;document.querySelector('#focus-part').disabled=false;
+ if(isolated){parts.forEach(item=>visibilityState.set(item.id,item.id===id));applyVisibility();}
  document.querySelector('#scene-status').textContent=`● ${part.name} selected`;
 }
 document.querySelector('#start-cpu').addEventListener('click',()=>selectPart('cpu'));
@@ -39,6 +71,7 @@ function startScene(){
  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
  renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
  renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.3;
+ const labelRenderer=new CSS2DRenderer({element:document.querySelector('#scene-labels')});labelRenderer.setSize(viewer.clientWidth,viewer.clientHeight);
  const controls=new OrbitControls(camera,canvas);controls.enableDamping=true;controls.enablePan=false;controls.minDistance=6;controls.maxDistance=15;controls.maxPolarAngle=Math.PI*.9;
  camera.position.set(5.7,3.7,8.6);controls.target.set(0,1.9,0);controls.update();controls.saveState();
  scene.add(new THREE.HemisphereLight(0xd8efff,0x424a3a,2.5));
@@ -82,19 +115,41 @@ function startScene(){
  for(const y of [1.4,2.58,3.76])fan('fans',1.04,y,-.05,.45);
  // Bundled power cables curve along the lower and right perimeter.
  for(let i=0;i<4;i++){const curve=new THREE.CatmullRomCurve3([new THREE.Vector3(.23,.66,-.02+i*.07),new THREE.Vector3(.66,.7,.1+i*.05),new THREE.Vector3(.77,1.08,.07+i*.05),new THREE.Vector3(.62,2.47,-.36+i*.04)]);mesh('psu',new THREE.TubeGeometry(curve,24,.021,6,false),[0,0,0],0x58636b);}
+ const labelAnchors={case:[-1.55,4.5,.85],board:[-1.15,4.18,-.48],cpu:[-.5,3.94,.22],ram:[.58,4.08,-.2],gpu:[-.15,2.54,.42],ssd:[-.48,1.82,-.42],psu:[-.55,1.12,.57],fans:[1.04,4.28,.18]};
+ parts.forEach(part=>{const node=document.createElement('span');node.className='scene-label';node.textContent=part.name;const label=new CSS2DObject(node);label.position.set(...labelAnchors[part.id]);groups.get(part.id).add(label);});
+ const explodedOffsets={case:[0,0,0],board:[-.55,.15,-.5],cpu:[-.55,.65,.9],ram:[.65,.6,.25],gpu:[-.45,-.05,1.55],ssd:[-.25,-.5,.85],psu:[-.25,-.55,-.35],fans:[1.25,.1,.6]};
+ const explodeTargets=new Map(parts.map(part=>[part.id,new THREE.Vector3()]));let exploded=false;
+ let cameraTween=null;
+ function setExploded(next){exploded=next;parts.forEach(part=>explodeTargets.get(part.id).set(...(next?explodedOffsets[part.id]:[0,0,0])));const button=document.querySelector('#explode-view');button.setAttribute('aria-pressed',String(next));button.querySelector('span:last-child').textContent=next?'Assemble':'Explode';document.querySelector('#view-badge').textContent=isolated?'ISOLATED VIEW':(next?'EXPLODED VIEW':'CUTAWAY VIEW');document.querySelector('#scene-status').textContent=`● ${next?'Exploded':'Assembled'} view`;}
+ function focusPart(id){
+  const group=groups.get(id);if(!visibilityState.get(id)){visibilityState.set(id,true);applyVisibility();}
+  group.updateWorldMatrix(true,true);const box3=new THREE.Box3().setFromObject(group);const sphere=box3.getBoundingSphere(new THREE.Sphere());const direction=camera.position.clone().sub(controls.target).normalize();const fov=THREE.MathUtils.degToRad(camera.fov);const distance=THREE.MathUtils.clamp(Math.max(sphere.radius*1.25,1.15)/Math.tan(fov/2),2.3,10);controls.minDistance=2.1;cameraTween={started:performance.now(),duration:650,fromPosition:camera.position.clone(),fromTarget:controls.target.clone(),toTarget:sphere.center.clone(),toPosition:sphere.center.clone().add(direction.multiplyScalar(distance))};document.querySelector('#scene-status').textContent=`● Focusing ${parts.find(part=>part.id===id).name}`;
+ }
+ sceneApi={get exploded(){return exploded;},setExploded,focusPart};
  const floor=new THREE.Mesh(new THREE.CircleGeometry(5,80),new THREE.ShadowMaterial({opacity:.25}));floor.rotation.x=-Math.PI/2;floor.position.y=-.05;floor.receiveShadow=true;scene.add(floor);
  const grid=new THREE.GridHelper(12,24,0x496070,0x2e414e);grid.position.y=-.06;grid.material.transparent=true;grid.material.opacity=.28;scene.add(grid);
  const raycaster=new THREE.Raycaster();const pointer=new THREE.Vector2();let down=null;let gesture=false;const activePointers=new Set();
  canvas.addEventListener('pointerdown',event=>{activePointers.add(event.pointerId);if(activePointers.size>1)gesture=true;down={x:event.clientX,y:event.clientY,id:event.pointerId};});
  canvas.addEventListener('pointermove',event=>{if(down&&Math.hypot(event.clientX-down.x,event.clientY-down.y)>5)gesture=true;});
- canvas.addEventListener('pointerup',event=>{activePointers.delete(event.pointerId);if(down&&down.id===event.pointerId&&!gesture&&event.button===0){const rect=canvas.getBoundingClientRect();pointer.set((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);const hit=raycaster.intersectObjects(hitTargets,false)[0];if(hit)selectPart(hit.object.userData.part);}if(!activePointers.size){down=null;gesture=false;}});
+ canvas.addEventListener('pointerup',event=>{activePointers.delete(event.pointerId);if(down&&down.id===event.pointerId&&!gesture&&event.button===0){const rect=canvas.getBoundingClientRect();pointer.set((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);const visibleTargets=hitTargets.filter(item=>visibilityState.get(item.userData.part));const hit=raycaster.intersectObjects(visibleTargets,false)[0];if(hit)selectPart(hit.object.userData.part);}if(!activePointers.size){down=null;gesture=false;}});
  canvas.addEventListener('pointercancel',event=>{activePointers.delete(event.pointerId);down=null;if(!activePointers.size)gesture=false;});
  function zoom(factor){const offset=camera.position.clone().sub(controls.target);offset.setLength(THREE.MathUtils.clamp(offset.length()*factor,controls.minDistance,controls.maxDistance));camera.position.copy(controls.target).add(offset);controls.update();}
  document.querySelector('#zoom-in').addEventListener('click',()=>zoom(.85));document.querySelector('#zoom-out').addEventListener('click',()=>zoom(1.18));
- document.querySelector('#reset-view').addEventListener('click',()=>{controls.reset();document.querySelector('#scene-status').textContent=selected?`● ${parts.find(p=>p.id===selected).name} selected · View reset`:'● View reset';});
- canvas.addEventListener('keydown',event=>{if(event.key==='+'||event.key==='='){event.preventDefault();zoom(.85);}if(event.key==='-'){event.preventDefault();zoom(1.18);}});
- new ResizeObserver(()=>{camera.aspect=viewer.clientWidth/viewer.clientHeight;camera.updateProjectionMatrix();renderer.setSize(viewer.clientWidth,viewer.clientHeight,false);}).observe(viewer);
+ document.querySelector('#explode-view').addEventListener('click',()=>setExploded(!exploded));
+ document.querySelector('#isolate-part').addEventListener('click',()=>setIsolation(!isolated));
+ document.querySelector('#focus-part').addEventListener('click',()=>selected&&focusPart(selected));
+ document.querySelector('#show-all').addEventListener('click',()=>{if(isolated)setIsolation(false);parts.forEach(part=>visibilityState.set(part.id,true));applyVisibility();document.querySelector('#scene-status').textContent='● All components shown';});
+ document.querySelector('#reset-view').addEventListener('click',()=>{cameraTween=null;controls.minDistance=6;controls.reset();document.querySelector('#scene-status').textContent=selected?`● ${parts.find(p=>p.id===selected).name} selected · View reset`:'● View reset';});
+ canvas.addEventListener('keydown',event=>{
+  const key=event.key.toLowerCase();
+  if(key==='+'||key==='='){event.preventDefault();zoom(.85);}else if(key==='-'){event.preventDefault();zoom(1.18);}else if(key==='e'){event.preventDefault();setExploded(!exploded);}else if(key==='i'&&selected){event.preventDefault();setIsolation(!isolated);}else if(key==='f'&&selected){event.preventDefault();focusPart(selected);}else if(key==='escape'&&isolated){event.preventDefault();setIsolation(false);}
+ });
+ new ResizeObserver(()=>{camera.aspect=viewer.clientWidth/viewer.clientHeight;camera.updateProjectionMatrix();renderer.setSize(viewer.clientWidth,viewer.clientHeight,false);labelRenderer.setSize(viewer.clientWidth,viewer.clientHeight);}).observe(viewer);
  document.querySelector('#scene-status').textContent='● Ready to explore';
- renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});
+ renderer.setAnimationLoop(time=>{
+  groups.forEach((group,id)=>{const target=explodeTargets.get(id);group.position.lerp(target,.1);if(group.position.distanceToSquared(target)<.000001)group.position.copy(target);});
+  if(cameraTween){const elapsed=Math.min((time-cameraTween.started)/cameraTween.duration,1);const eased=1-Math.pow(1-elapsed,3);camera.position.lerpVectors(cameraTween.fromPosition,cameraTween.toPosition,eased);controls.target.lerpVectors(cameraTween.fromTarget,cameraTween.toTarget,eased);if(elapsed===1){cameraTween=null;document.querySelector('#scene-status').textContent=`● ${parts.find(part=>part.id===selected).name} focused`;}}
+  controls.update();renderer.render(scene,camera);labelRenderer.render(scene,camera);
+ });
 }
 try{startScene();}catch(error){console.error(error);const fallback=document.querySelector('#scene-error');fallback.hidden=false;fallback.textContent='The 3D view could not start. Try a browser with WebGL enabled. You can still explore all component descriptions using the index.';document.querySelector('#scene-status').textContent='3D unavailable · Component guide ready';}
